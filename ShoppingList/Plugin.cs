@@ -8,6 +8,7 @@ using Unity.Netcode;
 using UnityEngine;
 using StbRectPackSharp;
 using KaimiraGames;
+using BepInEx.Configuration;
 
 namespace ShoppingList
 {
@@ -19,23 +20,129 @@ namespace ShoppingList
 
         public static WeightedList<string> weightedBuyerList;
 
+        // ========== 添加配置项 ==========
+        public static ConfigEntry<int> ConfigObsessiveWeight;
+        public static ConfigEntry<int> ConfigLoyalWeight;
+        public static ConfigEntry<int> ConfigStandardWeight;
+        public static ConfigEntry<float> ConfigRequiredRatio;
+        public static ConfigEntry<int> ConfigMaxItemsPerCustomer;
+        // ===============================
+
+        // ========== 运行时配置值（游戏开始时加载） ==========
+        public static int ObsessiveWeight;
+        public static int LoyalWeight;
+        public static int StandardWeight;
+        public static float RequiredRatio;
+        public static int MaxItemsPerCustomer;
+        // =================================================== 
+
         private void Awake()
         {
             // Plugin startup logic
             Logger = base.Logger;
             Logger.LogInfo($"Plugin ShoppingList is loaded!");
 
+            // ========== 初始化配置 ==========
+            InitConfig();
+            LoadConfigValues();
+            // ===============================
+
             this.m_harmony.PatchAll();
 
-            List<WeightedListItem<string>> weightedBuyerTypes = new()
+            // 初始化顾客类型列表（现在使用配置值）
+            UpdateWeightedBuyerList();
+            // ===============================
+
+            /*List<WeightedListItem<string>> weightedBuyerTypes = new()
                 {
                     new WeightedListItem<string>("obsessive", 1),
                     new WeightedListItem<string>("loyal", 20),
                     new WeightedListItem<string>("standard", 79),
                 };
 
+            weightedBuyerList = new(weightedBuyerTypes);*/
+        }
+
+        // ========== 配置初始化方法 ==========
+        private void InitConfig()
+        {
+            ConfigObsessiveWeight = Config.Bind(
+                "顾客类型",                     // 配置节
+                "ObsessiveWeight",              // 配置键
+                1,                              // 默认值
+                "痴迷型顾客权重 (1%)"           // 描述
+            );
+
+            ConfigLoyalWeight = Config.Bind(
+                "顾客类型",
+                "LoyalWeight",
+                20,
+                "忠诚型顾客权重 (20%)"
+            );
+
+            ConfigStandardWeight = Config.Bind(
+                "顾客类型",
+                "StandardWeight",
+                79,
+                "标准型顾客权重 (79%)"
+            );
+
+            ConfigRequiredRatio = Config.Bind(
+                "购物条件",
+                "RequiredRatio",
+                0.5f,
+                new ConfigDescription(
+                    "标准顾客离开阈值比例 (0.0-1.0)",
+                    new AcceptableValueRange<float>(0.1f, 1.0f)  // 允许的范围
+                )
+            );
+
+            ConfigMaxItemsPerCustomer = Config.Bind(
+                "购物条件",
+                "MaxItemsPerCustomer",
+                24,
+                new ConfigDescription(
+                    "每个顾客最大购买物品数量",
+                    new AcceptableValueRange<int>(6, 50)  // 允许的范围
+                )
+            );
+        }
+        // ==========================================
+
+        // ========== 加载配置值到静态变量 ==========
+        private void LoadConfigValues()
+        {
+            // 确保权重至少为1
+            ObsessiveWeight = Mathf.Max(1, ConfigObsessiveWeight.Value);
+            LoyalWeight = Mathf.Max(1, ConfigLoyalWeight.Value);
+            StandardWeight = Mathf.Max(1, ConfigStandardWeight.Value);
+            
+            // 确保比例在有效范围内
+            RequiredRatio = Mathf.Clamp(ConfigRequiredRatio.Value, 0.1f, 1.0f);
+            
+            // 确保最大购买数在6-50范围内
+            MaxItemsPerCustomer = Mathf.Clamp(ConfigMaxItemsPerCustomer.Value, 6, 50);
+            
+            Logger.LogInfo($"配置加载完成:");
+            Logger.LogInfo($"  顾客权重: 痴迷={ObsessiveWeight}, 忠诚={LoyalWeight}, 标准={StandardWeight}");
+            Logger.LogInfo($"  离开阈值: {RequiredRatio:P0}");
+            Logger.LogInfo($"  最大购买数: {MaxItemsPerCustomer}");
+        }
+        // ==========================================
+        
+        // ========== 更新加权列表方法 ==========
+        public static void UpdateWeightedBuyerList()
+        {
+            List<WeightedListItem<string>> weightedBuyerTypes = new()
+            {
+                new WeightedListItem<string>("obsessive", ObsessiveWeight),
+                new WeightedListItem<string>("loyal", LoyalWeight),
+                new WeightedListItem<string>("standard", StandardWeight),
+            };
+
             weightedBuyerList = new(weightedBuyerTypes);
         }
+        // =====================================
 
         [HarmonyPatch(typeof(CustomerController), nameof(CustomerController.SetupShoppingList))]
         class SetupShoppingListPatch
@@ -87,11 +194,15 @@ namespace ShoppingList
 
                 string buyerType = weightedBuyerList.Next();
 
+                // ========== 使用配置的最大购买数 ==========
+                int maxItems = MaxItemsPerCustomer;
+                // =======================================
+
                 if (buyerType == "obsessive")
                 {
                     ProductSO item = weightedList.Next();
 
-                    int num = Random.Range(4, Mathf.Min(item.amount, 24));
+                    int num = Random.Range(4, Mathf.Min(item.amount, maxItems));
                     for (int i = 0; i < num; i += 1)
                     {
                         __instance.shoppingList.Add(item);
@@ -101,8 +212,8 @@ namespace ShoppingList
 
                 if (buyerType == "loyal")
                 {
-                    int maxItems = Mathf.RoundToInt(Mathf.Lerp(0, 18, allMarketRatio)) + 6;
-                    int num = Random.Range(1, maxItems);
+                    int maxLoyalItems = Mathf.RoundToInt(Mathf.Lerp(0, maxItems - 6, allMarketRatio)) + 6;
+                    int num = Random.Range(1, maxLoyalItems);
 
                     for (int i = 0; i < num; i += 1)
                     {
@@ -117,7 +228,7 @@ namespace ShoppingList
                     return false;
                 }
 
-                int standardNum = Random.Range(1, 24);
+                int standardNum = Random.Range(1, maxItems);
                 int itemsInMarket = 0;
                 List<ProductSO> buyList = new List<ProductSO>();
                 for (int i = 0; i < standardNum; i += 1)
@@ -137,7 +248,11 @@ namespace ShoppingList
                     if (list2.Contains(item)) itemsInMarket += increment;
                 }
 
-                if ((itemsInMarket / standardNum) >= 0.5f)
+                // ========== 使用配置的阈值比例 ==========
+                
+                float ratio = (float)itemsInMarket / standardNum;
+                                
+                if (ratio >= RequiredRatio)
                 {
                     for (int i = 0; i < buyList.Count; i += 1)
                     {
